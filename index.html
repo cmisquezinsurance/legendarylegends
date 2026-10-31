@@ -147,7 +147,7 @@ body.lobby #hotbar,body.lobby #bAtk,body.lobby #bBuild,body.lobby #bPot,body.lob
 <div id="menu" class="overlay">
   <div class="card">
     <h1>Legendary<br>Legends</h1>
-    <p class="by">A battle game by Jaxton</p>
+    <p class="by">A battle game by Jaxton · Version 28</p>
     <div class="lbl">Pick your skin</div>
     <div id="skins"></div>
     <button id="play" class="big">Play</button>
@@ -228,7 +228,7 @@ body.lobby #hotbar,body.lobby #bAtk,body.lobby #bBuild,body.lobby #bPot,body.lob
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 const cv=$('cv'),ctx=cv.getContext('2d'),mini=$('mini'),mctx=mini.getContext('2d'),mapCv=$('mapCv'),mapCtx=mapCv.getContext('2d');
@@ -544,6 +544,21 @@ function updateBall(dt){const S=stadium,b=ball;if(!S||!b||S.dead)return;const hw
   if(Math.hypot(b.x-S.x,b.y-S.y)>900){b.x=S.x;b.y=S.y;b.vx=b.vy=0}}
 let room=null,net={on:false,srv:null,me:null,since:Date.now(),gid:null,lastStart:null,hitN:0,hits:[],seen:{},rvN:0,rv:null,seenRv:{},oc:[],shN:0,sh:null,peers:[]};
 const SERVERS=[['server-1','Server 1'],['server-2','Server 2'],['server-3','Server 3']];
+const NETPFX='legendarylegends-jaxton-2026';let netStatus='';
+function makeMqttRoom(){const hs=[];const myId='m'+Math.random().toString(36).slice(2,10);let mine={},all={},client=null,dirty=true,lastPub=0,bi=0;
+  const BROKERS=['wss://broker.hivemq.com:8884/mqtt','wss://test.mosquitto.org:8081/mqtt','wss://broker.emqx.io:8084/mqtt'];
+  const emit=()=>{const now=Date.now();for(const id in all)if(now-all[id].t>7000)delete all[id];const peers=[{peer:myId,presence:mine,isMe:true,sameTab:true,kind:'viewer'}];for(const id in all)peers.push({peer:id,presence:all[id].pr,isMe:false,sameTab:false,kind:'viewer'});hs.forEach(h=>{try{h({peers,joined:[],left:[],updated:[]})}catch(e){}})};
+  const start=()=>{const url=BROKERS[bi%BROKERS.length];netStatus='connecting';olNote();let ok=false;
+    try{client=mqtt.connect(url,{clientId:myId+'_'+bi,keepalive:20,reconnectPeriod:0,connectTimeout:7000,clean:true})}catch(e){bi++;return setTimeout(start,500)}
+    const fail=()=>{if(ok)return;ok=true;try{client.end(true)}catch(e){}bi++;netStatus='retry';olNote();setTimeout(start,800)};
+    const t=setTimeout(fail,8000);
+    client.on('connect',()=>{clearTimeout(t);ok=true;netStatus='online';olNote();client.subscribe(NETPFX+'/p/+');dirty=true});
+    client.on('message',(topic,buf)=>{const id=topic.slice(topic.lastIndexOf('/')+1);if(id===myId)return;try{const pr=JSON.parse(buf.toString());if(pr.bye){delete all[id]}else all[id]={pr,t:Date.now()}}catch(e){}});
+    client.on('error',()=>{if(!ok)fail()});client.on('close',()=>{if(ok&&netStatus==='online'){netStatus='retry';olNote();bi++;setTimeout(start,1000)}})};
+  start();
+  setInterval(()=>{const now=Date.now();if(client&&client.connected&&(mine.srv||dirty)&&(dirty&&now-lastPub>90||now-lastPub>1500)){dirty=false;lastPub=now;try{client.publish(NETPFX+'/p/'+myId,JSON.stringify(mine.srv?mine:{bye:1}))}catch(e){}}emit()},100);
+  addEventListener('pagehide',()=>{try{client&&client.publish(NETPFX+'/p/'+myId,JSON.stringify({bye:1}))}catch(e){}});
+  return{mq:true,onPeers(h){hs.push(h);setTimeout(emit,0);return()=>{}},async presence(p){mine=Object.assign({},mine,p);for(const k in p)if(p[k]===null)delete mine[k];dirty=true}}}
 function makePeerRoom(){const hs=[],eh=[];let srv=null,peer=null,conns=new Map(),hostConn=null,isHost=false,mine={},all={},myId=null,dirty=false,gen=0;
   const HID=id=>'legendary-legends-game-'+id;
   const emit=()=>{const peers=Object.entries(all).map(([id,pr])=>({peer:id,presence:pr,isMe:id===myId,sameTab:id===myId,kind:'viewer',guest:false,by:null}));hs.forEach(h=>{try{h({peers,joined:[],left:[],updated:[]})}catch(e){}})};
@@ -564,16 +579,16 @@ function makePeerRoom(){const hs=[],eh=[];let srv=null,peer=null,conns=new Map()
   return{p2p:true,onPeers(h,err){hs.push(h);if(err)eh.push(err);setTimeout(emit,0);return()=>{}},
     async presence(p){const want=('srv' in p)?p.srv:srv;mine=Object.assign({},mine,p);for(const k in p)if(p[k]===null)delete mine[k];
       if(want!==srv){if(want)connect(want);else{srv=null;close()}}mine.srv=srv;if(myId)all[myId]=mine;dirty=true;if(!isHost)emit()}}}
-(async()=>{try{if(!window.claude||!window.claude.use){if(window.Peer){room=makePeerRoom();room.onPeers(ch=>{net.peers=ch.peers;const me=ch.peers.find(p=>p.isMe);net.me=me?me.peer:net.me;renderOnline();checkStart()})}return olNote()}room=await window.claude.use('room');olNote();if(!room)return;
+(async()=>{try{if(!window.claude||!window.claude.use){if(window.mqtt){room=makeMqttRoom();room.onPeers(ch=>{net.peers=ch.peers;net.me=ch.peers[0].peer;renderOnline();checkStart()})}else if(window.Peer){room=makePeerRoom();room.onPeers(ch=>{net.peers=ch.peers;const me=ch.peers.find(p=>p.isMe);net.me=me?me.peer:net.me;renderOnline();checkStart()})}return olNote()}room=await window.claude.use('room');olNote();if(!room)return;
   room.onPeers(ch=>{net.peers=ch.peers;const me=ch.peers.find(p=>p.isMe&&p.sameTab);if(me)net.me=me.peer;renderOnline();checkStart()},()=>{room=null;olNote()})}catch(e){olNote()}})();
-function olNote(){const n=$('olNote');if(!n)return;n.innerHTML=room&&room.p2p?'Pick a server. Your friend opens this same website and joins the same server number. The first person in a server is its host, so keep that tab open while you play.':room?'Pick a server. Friends who open this game while signed in to Claude can join the same server and play together.':'Online servers need your friends to be signed in to Claude, and you have to share this game with them from the Share button. They can\'t join from a public link.';}
+function olNote(){const n=$('olNote');if(!n)return;if(room&&room.mq){n.innerHTML=netStatus==='online'?'<b style="color:#3ddc84">● Online.</b> Pick a server. Everyone joins the <b>same server number</b>, and the first one in the lobby starts the match.':netStatus==='retry'?'<b style="color:#ffb13d">● Still connecting...</b> If this keeps showing, this Wi-Fi might block online games. Try phone data or another Wi-Fi.':'<b style="color:#ffcf3a">● Connecting to online play...</b>';renderOnline();return}n.innerHTML=room&&room.p2p?'Pick a server. Your friend opens this same website and joins the same server number. The first person in a server is its host, so keep that tab open while you play.':room?'Pick a server. Friends who open this game while signed in to Claude can join the same server and play together.':'Online servers need your friends to be signed in to Claude, and you have to share this game with them from the Share button. They can\'t join from a public link.';}
 function pres(p){return p&&p.presence||{}}
 function srvPeers(id){return net.peers.filter(p=>p.kind==='viewer'&&pres(p).srv===id)}
 function hostOf(list){return list.filter(p=>pres(p).st==='lobby'||pres(p).start).slice().sort((a,b)=>(pres(a).since||9e15)-(pres(b).since||9e15)||(a.peer<b.peer?-1:1))[0]}
 function myNick(){return ($('nick').value||'').trim().slice(0,14)||'Player'}
 function setPres(p){if(room)room.presence(p).catch(()=>{})}
 function renderOnline(){if($('online').hidden)return;
-  $('srvList').innerHTML=SERVERS.map(([id,nm])=>{const n=srvPeers(id).length,inn=net.srv===id;return '<div class="item"><div><b>'+nm+'</b><span>'+(room&&room.p2p&&!inn?'Tap Join to see who is here':n+' player'+(n===1?'':'s')+' here')+'</span></div><button id="join-'+id+'" data-srv="'+id+'"'+(!room?' disabled':'')+'>'+(inn?'Leave':'Join')+'</button></div>'}).join('');
+  $('srvList').innerHTML=SERVERS.map(([id,nm])=>{const n=srvPeers(id).length,inn=net.srv===id;return '<div class="item"><div><b>'+nm+'</b><span>'+(room&&room.p2p&&!inn?'Tap Join to see who is here':n+' player'+(n===1?'':'s')+' here')+'</span></div><button id="join-'+id+'" data-srv="'+id+'"'+(!room||(room.mq&&netStatus!=='online'&&!inn)?' disabled':'')+'>'+(inn?'Leave':'Join')+'</button></div>'}).join('');
   const box=$('srvRoom');if(!net.srv){box.hidden=true;return}box.hidden=false;const list=srvPeers(net.srv),host=hostOf(list),amHost=host&&host.isMe&&host.sameTab;
   $('srvTitle').textContent=SERVERS.find(x=>x[0]===net.srv)[1]+' · '+list.length+' player'+(list.length===1?'':'s');
   const pl=$('olPlayers');pl.innerHTML='';list.forEach(p=>{const d=document.createElement('div');d.className='item';const dot=document.createElement('span');dot.className='pdot';dot.style.background=pres(p).col||'#888';const t=document.createElement('div');const b=document.createElement('b');b.textContent=(pres(p).nick||'Player')+(p.isMe&&p.sameTab?' (you)':'');t.appendChild(b);const sp=document.createElement('span');sp.textContent=pres(p).st==='play'?'In a match':'Ready';t.appendChild(sp);d.append(dot,t);if(p===host){const bd=document.createElement('span');bd.className='badge';bd.textContent='HOST';d.appendChild(bd)}pl.appendChild(d)});
